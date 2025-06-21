@@ -1,24 +1,22 @@
 # morning_evening_bot.py
 
-from aiogram import Bot, Dispatcher, types
+import os
+from aiogram import Bot, Dispatcher, types, executor
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
 import asyncio
 import json
 import pytz
-import os
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-API_TOKEN = os.getenv('API_TOKEN')  # Bot token from BotFather
+API_TOKEN = os.getenv('API_TOKEN')  # Токен от @BotFather
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
-scheduler.start()
 
 user_data_file = 'users.json'
 
@@ -34,6 +32,8 @@ CHARACTERS = ["Мама", "Папа", "Любимая женщина", "Люби
 STYLES = ["Заботливый", "Романтичный", "Дружеский / весёлый", "Нейтральный"]
 TIMES = ["Только утром", "Только вечером", "И утром, и вечером"]
 
+# -------------------------- Хелперы ----------------------------
+
 def load_users():
     try:
         with open(user_data_file, 'r', encoding='utf-8') as f:
@@ -41,10 +41,14 @@ def load_users():
     except FileNotFoundError:
         return {}
 
+
 def save_users(data):
     with open(user_data_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+# -------------------------- Обработчики анкеты ----------------------------
+
+@dp.message_handler(commands='start')
 async def cmd_start(message: types.Message):
     await message.answer("Привет! 💌 Давай начнём. От кого ты хочешь получать пожелания? (Выбери одного)")
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -52,10 +56,6 @@ async def cmd_start(message: types.Message):
         kb.add(KeyboardButton(ch))
     await Form.character.set()
     await message.answer("Выбери из списка:", reply_markup=kb)
-
-@dp.message_handler(commands='start')
-async def start_bot(message: types.Message):
-    await cmd_start(message)
 
 @dp.message_handler(state=Form.character)
 async def set_character(message: types.Message, state: FSMContext):
@@ -111,12 +111,23 @@ async def set_schedule(message: types.Message, state: FSMContext):
     await message.answer("Спасибо! Всё сохранено 💌 Теперь я буду писать тебе ежедневно")
     await state.finish()
 
+# -------------------------- Генерация сообщений ----------------------------
+
 def generate_message(info, evening=False):
     nick = info['nicknames'][0] if info['nicknames'] else 'дорогой'
     character = info['character']
-    if evening:
-        # Evening variants
-        return {
+    templates = {
+        False: {
+            'Мама': f"Доброе утро, {nick}! Мамочка желает тебе чудесного дня.",
+            'Папа': f"Доброе утро, {nick}. Папа гордится тобой!",
+            'Любимый мужчина': f"Доброе утро, {nick} 😘 Я скучаю.",
+            'Любимая женщина': f"Доброе утро, моя {nick}! Ты лучшая.",
+            'Подруга': f"Привет, {nick}! Давай зажжём этот день.",
+            'Друг': f"Доброе утро, {nick}! Вперёд к приключениям.",
+            'Бабушка': f"Доброе утро, {nick}. Бабуля обнимает.",
+            'Дедушка': f"Доброе утро, {nick}. Дедушка желает хорошего дня."
+        },
+        True: {
             'Мама': f"Спокойной ночи, {nick}! Мамочка рядом в мыслях.",
             'Папа': f"Спокойной ночи, {nick}. Папа уверен – всё будет хорошо.",
             'Любимый мужчина': f"Спи сладко, {nick} 😘 Я рядом.",
@@ -125,29 +136,28 @@ def generate_message(info, evening=False):
             'Друг': f"Добрых снов, {nick}. Завтра снова в бой.",
             'Бабушка': f"Спи спокойно, внук. Бабуля любит.",
             'Дедушка': f"Спокойной ночи, внучек. Дедушка рядом."
-        }.get(character, f"Спокойной ночи, {nick}!")
+        }
+    }
+    return templates[evening].get(character, templates[evening].get(False))
 
-    return {
-        'Мама': f"Доброе утро, {nick}! Мамочка желает тебе чудесного дня.",
-        'Папа': f"Доброе утро, {nick}. Папа гордится тобой!",
-        'Любимый мужчина': f"Доброе утро, {nick} 😘 Я скучаю.",
-        'Любимая женщина': f"Доброе утро, моя {nick}! Ты лучшая.",
-        'Подруга': f"Привет, {nick}! Давай зажжём этот день.",
-        'Друг': f"Доброе утро, {nick}! Вперёд к приключениям.",
-        'Бабушка': f"Доброе утро, {nick}. Бабуля обнимает.",
-        'Дедушка': f"Доброе утро, {nick}. Дедушка желает хорошего дня."
-    }.get(character, f"Доброе утро, {nick}!")
+# -------------------------- Планировщик ----------------------------
+
+async def on_startup(dp):
+    scheduler.start()
+
+scheduler = AsyncIOScheduler()  # Инициализируем, но не стартуем сразу
+
+# -------------------------- Рассылка ----------------------------
 
 async def send_daily_messages():
     users = load_users()
     for user_id, info in users.items():
-        tz = info.get('timezone', 'Europe/Moscow')
+        tz_name = info.get('timezone', 'Europe/Moscow')
         try:
-            now = datetime.now(pytz.timezone(tz))
-        except:
+            now = datetime.now(pytz.timezone(tz_name))
+        except Exception:
             now = datetime.now()
         hour = now.hour
-        # Morning at 08:00, Evening at 20:00
         if info['schedule'] in ["Только утром", "И утром, и вечером"] and hour == 8:
             await bot.send_message(user_id, generate_message(info, evening=False))
         if info['schedule'] in ["Только вечером", "И утром, и вечером"] and hour == 20:
@@ -155,5 +165,7 @@ async def send_daily_messages():
 
 scheduler.add_job(send_daily_messages, 'cron', minute=0)
 
+# -------------------------- Запуск ----------------------------
+
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
